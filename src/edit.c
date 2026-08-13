@@ -48,7 +48,7 @@ void draw_screen(BITMAP *bmp, int mx, int my) {
     // show start tile/line
     rect(bmp, (-ox + map->start_x) << 6, (-oy + map->start_y) << 6, (-ox + map->start_x + 1) << 6, (-oy + map->start_y + 1) << 6, 15);
     line(bmp, ((-ox + map->start_x) << 6)+32, ((-oy + map->start_y) << 6)+32, 
-        ((-ox + map->start_x) << 6) +32+ fixtoi(30*fcos(itofix(map->start_dir * 64))), ((-oy + map->start_y) << 6) +32+ fixtoi(30*fsin(itofix(map->start_dir * 64))), 15);
+        ((-ox + map->start_x) << 6) +32+ fixtoi(30*fixcos(itofix(map->start_dir * 64))), ((-oy + map->start_y) << 6) +32+ fixtoi(30*fixsin(itofix(map->start_dir * 64))), 15);
 
     // print useful text
     textprintf(bmp, data[FONT_SML].dat, 1, 1, 15, "Editing %s       ::   tileset: %s", map->file_name, map->tile_set);

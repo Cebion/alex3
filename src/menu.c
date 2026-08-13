@@ -89,7 +89,7 @@ void draw_menu(BITMAP *bmp, Tmenu *m, Tmenu_params *mp, int x, int y) {
 		if (m[pos].flags & MF_SELECTED) {
 //			if (mp->bullet != NULL) draw_sprite(bmp, mp->bullet, x - mp->bullet->w, y + pos * h - 8);
 //			else circle(bmp, x-10, y + pos * h+15, 2, 15);
-            draw_menu_item(bmp, str, mp, 320, y + pos * h + fixtoi(5 * fcos(itofix((count++)*13))));
+            draw_menu_item(bmp, str, mp, 320, y + pos * h + fixtoi(5 * fixcos(itofix((count++)*13))));
 		}
 		else {
             draw_menu_item(bmp, str, mp, 320, y + pos * h);
@@ -123,7 +123,7 @@ void reset_menu(Tmenu *m, Tmenu_params *mp, int sel_pos) {
 // x,y - where to draw the menu
 // ctrl - control method
 // return - action selected
-int update_menu(BITMAP *bmp, Tmenu *m, Tmenu_params *mp, Tcontrol *ctrl, int x, int y, void **data) {
+int update_game_menu(BITMAP *bmp, Tmenu *m, Tmenu_params *mp, Tcontrol *ctrl, int x, int y, void **data) {
 	int num_posts, old_pos, pos=0;
 	int return_value = 0;
 
@@ -188,7 +188,7 @@ int handle_menu(Tmenu *menu,  Tmenu_params *mp, Tcontrol *ctrl, BITMAP *bmp, voi
 		if (callback != NULL) callback();
 		else clear(bmp);
 
-		menu_return = update_menu(bmp, menu, mp, (handle_keys ? ctrl : NULL), x, y, &data);
+		menu_return = update_game_menu(bmp, menu, mp, (handle_keys ? ctrl : NULL), x, y, &data);
 		blit_to_screen(bmp);
 		
 		if (!is_any(ctrl) && !is_any(&mp->ctrl)) handle_keys = TRUE;

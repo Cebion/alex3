@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include "allegro.h"
 #include "map.h"
 
@@ -94,12 +95,67 @@ void destroy_map(Tmap *m) {
 }
 
 
+// Original map files were written by the 32-bit Windows/MSVC6 build, which
+// packs Tmap without the two now-64-bit pointer fields (gfx, dat) bloating
+// it - sizeof(Tmap) on a 64-bit build is 712 bytes vs the file's original
+// 700, so a blind fread(m, sizeof(Tmap), 1, fp) reads every field after
+// `gfx` from the wrong byte offset (confirmed on real hardware: width read
+// as a plausible 20, but height came back as a huge garbage value that blew
+// up the tile array allocation). LEGACY_TMAP_SIZE/tmap_from_legacy_buf/
+// tmap_to_legacy_buf read and write the fields individually at their
+// original 32-bit offsets so this is independent of the current platform's
+// pointer size.
+#define LEGACY_TMAP_SIZE 700
+
+static void tmap_from_legacy_buf(Tmap *m, unsigned char *buf) {
+    memcpy(m->name, buf + 0, 64);
+    memcpy(m->file_name, buf + 64, 64);
+    memcpy(m->tile_set, buf + 128, 127);
+    m->num_laps = buf[255];
+    // buf[256..260): 32-bit gfx pointer on disk, discarded - gfx is loaded separately
+    memcpy(&m->num_tiles, buf + 260, 4);
+    memcpy(&m->width, buf + 264, 4);
+    memcpy(&m->height, buf + 268, 4);
+    // buf[272..276): 32-bit dat pointer on disk, discarded - dat is allocated separately
+    memcpy(&m->offset_x, buf + 276, 4);
+    memcpy(&m->offset_y, buf + 280, 4);
+    memcpy(&m->start_x, buf + 284, 4);
+    memcpy(&m->start_y, buf + 288, 4);
+    m->start_dir = buf[292];
+    m->max_checkpoints = buf[293];
+    // buf[294..296): compiler padding on the original 32-bit struct, discarded
+    memcpy(&m->num_ai_coords, buf + 296, 4);
+    memcpy(m->ai_path, buf + 300, 400);
+}
+
+static void tmap_to_legacy_buf(Tmap *m, unsigned char *buf) {
+    memset(buf, 0, LEGACY_TMAP_SIZE);
+    memcpy(buf + 0, m->name, 64);
+    memcpy(buf + 64, m->file_name, 64);
+    memcpy(buf + 128, m->tile_set, 127);
+    buf[255] = m->num_laps;
+    // buf[256..260) left zeroed - no valid pointer to persist across runs
+    memcpy(buf + 260, &m->num_tiles, 4);
+    memcpy(buf + 264, &m->width, 4);
+    memcpy(buf + 268, &m->height, 4);
+    // buf[272..276) left zeroed
+    memcpy(buf + 276, &m->offset_x, 4);
+    memcpy(buf + 280, &m->offset_y, 4);
+    memcpy(buf + 284, &m->start_x, 4);
+    memcpy(buf + 288, &m->start_y, 4);
+    buf[292] = m->start_dir;
+    buf[293] = m->max_checkpoints;
+    memcpy(buf + 296, &m->num_ai_coords, 4);
+    memcpy(buf + 300, m->ai_path, 400);
+}
+
 // loads one splendind map from disk
 Tmap *load_map(char *fname) {
 	Tmap *m;
 	FILE *fp;
     char header[6];
-	
+    unsigned char legacy[LEGACY_TMAP_SIZE];
+
 	// open file
 	fp = fopen(fname, "rb");
 	if (fp == NULL) {
@@ -119,12 +175,17 @@ Tmap *load_map(char *fname) {
 		fclose(fp);
 		return NULL;
 	}
-	
-	// read datastruct
-	fread(m, sizeof(Tmap), 1, fp);
+
+	// read datastruct (fixed 32-bit-original layout, not sizeof(Tmap) - see comment above)
+	if (fread(legacy, LEGACY_TMAP_SIZE, 1, fp) != 1) {
+		free(m);
+		fclose(fp);
+		return NULL;
+	}
+	tmap_from_legacy_buf(m, legacy);
 
     // get memory
-	m->dat = malloc(sizeof(Tmap) * m->width * m->height);
+	m->dat = malloc(sizeof(Tmappos) * m->width * m->height);
 	if (m->dat == NULL) {
         free(m);
 		fclose(fp);
@@ -154,7 +215,7 @@ int load_map_tiles(Tmap *m) {
 
 	m->num_tiles = 0;
 	for (i=0; m->gfx[i].type != DAT_END; i++) {
-		if (!strnicmp(get_datafile_property(m->gfx+i, DAT_ID('N','A','M','E')), "TILE", 4)) m->num_tiles ++;
+		if (!strncasecmp(get_datafile_property(m->gfx+i, DAT_ID('N','A','M','E')), "TILE", 4)) m->num_tiles ++;
 	}
 
     set_palette(m->gfx[0].dat);
@@ -167,7 +228,8 @@ int load_map_tiles(Tmap *m) {
 int save_map(Tmap *m, char *fname) {
 	FILE *fp;
 	char header[6] = "AX3MAP";
-	
+	unsigned char legacy[LEGACY_TMAP_SIZE];
+
 	// open file
 	fp = fopen(fname, "wb");
 	if (fp == NULL) return FALSE;
@@ -175,15 +237,16 @@ int save_map(Tmap *m, char *fname) {
 	// write header
 	fwrite(header, 6, 1, fp);
 
-	// write datastruct
-	fwrite(m, sizeof(Tmap), 1, fp);
+	// write datastruct (fixed 32-bit-original layout - see load_map() comment)
+	tmap_to_legacy_buf(m, legacy);
+	fwrite(legacy, LEGACY_TMAP_SIZE, 1, fp);
 
 	// write mappos
     fwrite(m->dat, sizeof(Tmappos) * m->width * m->height, 1, fp);
 
 	// close file
 	fclose(fp);
-	
+
 	return TRUE;
 }
 

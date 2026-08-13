@@ -22,7 +22,10 @@
 
 
 #include <stdio.h>
+#include <dlfcn.h>
+#include <time.h>
 #include "allegro.h"
+#include "allegro/platform/alunix.h"
 #include "main.h"
 #include "timer.h"
 #include "control.h"
@@ -35,7 +38,7 @@
 #include "rally.h"
 #include "vehicle.h"
 #include "demo.h"
-#include "Player.h"
+#include "player.h"
 
 // data
 #include "../data/data.h"
@@ -52,6 +55,12 @@ int window = TRUE;
 int got_joystick;
 
 BITMAP *swap_screen = NULL;
+
+// Real device resolution, queried at startup - GFX_AUTODETECT_WINDOWED needs
+// an explicit target size (unlike GFX_AUTODETECT, it won't just fill the
+// screen on its own), and blit_to_screen() below scales the game's native
+// 640x480 swap_screen up to this size, letterboxed.
+int phys_w = 640, phys_h = 480;
 
 Tcontrol ctrl;
 Toptions options;
@@ -174,6 +183,67 @@ void play_sound(SAMPLE *s, int pitch) {
 // init and uninit
 //////////////////////////////////////////////////
 
+// Rewrites every channel-voice MIDI event on old_ch to new_ch, in place, in
+// every track of m. Used to fix the original 2002 MIDI data (see call site)
+// rather than editing the datafile itself. Channel-voice status bytes are
+// 0x80-0xEF with the channel in the low nibble; running status (a data byte
+// with no new status byte) is left untouched since it implicitly refers to
+// whichever explicit status byte precedes it in the stream, which this
+// already rewrites in place.
+static void remap_midi_channel(MIDI *m, int old_ch, int new_ch) {
+	int t;
+	if (!m) return;
+	for (t = 0; t < MIDI_TRACKS; t++) {
+		unsigned char *p = m->track[t].data;
+		int len = m->track[t].len;
+		int pos = 0;
+		int running_status = -1;
+		while (pos < len) {
+			unsigned char status;
+			int has_status_byte;
+			// skip delta-time (variable length quantity)
+			while (pos < len && (p[pos] & 0x80)) pos++;
+			if (pos < len) pos++;
+			if (pos >= len) break;
+			status = p[pos];
+			has_status_byte = (status & 0x80) != 0;
+			if (has_status_byte) {
+				pos++;
+				if (status < 0xF0) running_status = status;
+			}
+			else status = (unsigned char)running_status;
+			if (status == 0xFF) {
+				int length = 0;
+				if (pos >= len) break;
+				pos++; // meta type byte
+				while (pos < len) {
+					unsigned char b = p[pos]; pos++;
+					length = (length << 7) | (b & 0x7f);
+					if (!(b & 0x80)) break;
+				}
+				pos += length;
+			}
+			else if (status == 0xF0 || status == 0xF7) {
+				int length = 0;
+				while (pos < len) {
+					unsigned char b = p[pos]; pos++;
+					length = (length << 7) | (b & 0x7f);
+					if (!(b & 0x80)) break;
+				}
+				pos += length;
+			}
+			else if (status >= 0x80 && status <= 0xEF) {
+				int nbytes = ((status & 0xF0) == 0xC0 || (status & 0xF0) == 0xD0) ? 1 : 2;
+				if (has_status_byte && (status & 0x0F) == old_ch) {
+					p[pos - 1] = (status & 0xF0) | new_ch;
+					running_status = p[pos - 1];
+				}
+				pos += nbytes;
+			}
+			else break;
+		}
+	}
+}
 
 // inits everything
 int init_game() {
@@ -186,11 +256,30 @@ int init_game() {
 	install_timers();
 	install_mouse();
 
+	// query the real device resolution now (must be after allegro_init(),
+	// before set_gfx_mode()) - see phys_w/phys_h comment above.
+	get_desktop_resolution(&phys_w, &phys_h);
+
 	// sound
+	// PortMaster always runs as root, and Allegro's own ALLEGRO_MODULES env-var
+	// based driver auto-loading is disabled by Allegro itself when euid==0, so
+	// the ALSA digital driver module is loaded explicitly here first (see
+	// docs/allegro4-porting.md).
+	{
+		void *alsadigi = dlopen("./alleg-alsadigi.so", RTLD_NOW);
+		if (alsadigi) {
+			void (*mod_init)(int) = dlsym(alsadigi, "_module_init");
+			if (mod_init) mod_init(SYSTEM_XWINDOWS);
+		}
+	}
 	install_sound(DIGI_AUTODETECT, MIDI_AUTODETECT, NULL);
-	
+
 	// check for joystick
-	got_joystick = (install_joystick(JOY_TYPE_AUTODETECT) ? 0 : 1);
+	// Joystick input is driven through gptokeyb's synthetic keyboard events
+	// instead (see the .gptk mapping), not Allegro's own low-level joystick
+	// API - avoids Allegro's joystick auto-calibration interacting badly with
+	// gptokeyb's uinput device.
+	got_joystick = 0;
 
 	// get memory for buffers
 	swap_screen = create_bitmap(640, 480);
@@ -210,6 +299,41 @@ int init_game() {
     ((RGB *)data[0].dat)->r =
     ((RGB *)data[0].dat)->g =
     ((RGB *)data[0].dat)->b = 0;
+
+	// The original 2002 MIDI files bundled in this datafile have two separate
+	// authoring bugs, both confirmed by directly inspecting the raw MIDI
+	// event data (not guessed) and both inaudible on whatever the original
+	// Windows/DirectMusic playback path was, but audible through Allegro's
+	// DIGMID software synth:
+	// 1. Duplicate/overlapping tracks written to the same channel - confirmed
+	//    on real device as an echo. MIDI_MENU has two exact byte-for-byte-
+	//    identical track pairs (channel 1 and channel 9); MIDI_GAME has two
+	//    near-identical tracks both on channel 11. Mute the redundant track
+	//    of each pair.
+	// 2. A real melodic part (Acoustic Grand Piano, confirmed via the
+	//    Program Change event) is written on channel 9 in both files -
+	//    channel 9 (10 in 1-indexed MIDI numbering) is the GM-reserved
+	//    percussion channel, which DIGMID treats as drums-only regardless of
+	//    Program Change, so that whole part gets rendered as note-triggered
+	//    drum hits instead of a piano - confirmed on real device as
+	//    wrong-sounding/noisy instruments. Remap it to channel 13, unused in
+	//    both files, so it plays as the intended melodic instrument.
+	// Both are patched on the loaded MIDI struct in memory rather than
+	// editing the original datafile.
+	{
+		MIDI *m;
+		m = (MIDI *)data[MIDI_MENU].dat;
+		if (m) {
+			m->track[2].len = 0;
+			m->track[4].len = 0;
+			remap_midi_channel(m, 9, 13);
+		}
+		m = (MIDI *)data[MIDI_GAME].dat;
+		if (m) {
+			m->track[9].len = 0;
+			remap_midi_channel(m, 9, 13);
+		}
+	}
 
 	
 	// load config
@@ -231,14 +355,14 @@ int init_game() {
 	set_color_depth(8);
 
 	if (!options.full_screen) {
-		if (set_gfx_mode(GFX_DIRECTX_WIN, 640, 480, 0, 0) >= 0) {
+		if (set_gfx_mode(GFX_AUTODETECT_WINDOWED, phys_w, phys_h, 0, 0) >= 0) {
 			window = 1;
 			set_palette(data[AAAPAL].dat);
 		}
 		else options.full_screen = TRUE;
 	}
 	if (options.full_screen) {
-		if (set_gfx_mode(GFX_AUTODETECT, 640, 480, 0, 0) >= 0) {
+		if (set_gfx_mode(GFX_AUTODETECT_WINDOWED, phys_w, phys_h, 0, 0) >= 0) {
 			window = 0;
 			set_palette(data[AAAPAL].dat);
 		}
@@ -255,7 +379,15 @@ int init_game() {
 	if (exists("debug.me")) debug = TRUE;
 
 	// set switch mode
-	set_display_switch_mode(SWITCH_PAUSE);
+	// SWITCH_PAUSE stops polling input whenever Allegro thinks the display
+	// isn't focused. Under Westonpack's fullscreen kiosk mode there's no real
+	// window manager to hand the game focus the way a normal X11 WM would, so
+	// Allegro can end up treating the game as permanently unfocused - all
+	// input (menu and gameplay both) silently stops. SWITCH_BACKGROUND keeps
+	// the game fully live regardless of any (real or phantom) focus state,
+	// which is always correct here since there is nothing else on screen to
+	// switch away to.
+	set_display_switch_mode(SWITCH_BACKGROUND);
 
 	// misc
 	text_mode(-1);
@@ -295,11 +427,62 @@ void uninit_game() {
 // general drawing
 //////////////////////////////////////////////////
 
-// blit a bmp to screen
+// blit a bmp to screen, scaled up to the real device resolution and
+// letterboxed/pillarboxed to preserve aspect ratio (see phys_w/phys_h -
+// GFX_AUTODETECT_WINDOWED, unlike GFX_AUTODETECT, doesn't fill the screen on
+// its own even when sized to phys_w/phys_h, so this always scales rather than
+// only conditionally).
 void blit_to_screen(BITMAP *bmp) {
-	acquire_screen();
-	blit(bmp, screen, 0, 0, 0, 0, bmp->w, bmp->h);
-	release_screen();
+	int dst_w, dst_h, dst_x, dst_y;
+
+	dst_w = phys_w;
+	dst_h = dst_w * bmp->h / bmp->w;
+	if (dst_h > phys_h) {
+		dst_h = phys_h;
+		dst_w = dst_h * bmp->w / bmp->h;
+	}
+	dst_x = (phys_w - dst_w) / 2;
+	dst_y = (phys_h - dst_h) / 2;
+
+	// [alex3 debug] temporary timing instrumentation - remove before shipping.
+	// rate_limit test: real device testing (RockNix, Panfrost, Xwayland)
+	// showed blit_to_screen() itself getting progressively slower call over
+	// call within a single session (system-wide Shmem growing right along
+	// with it) purely from calling it back-to-back with zero gap - the
+	// existing cycle_count-based pacing elsewhere in the game silently stops
+	// working the moment a single blit takes longer than its 20ms tick, which
+	// it always does once this starts, so the render loop was actually
+	// hammering the X server with zero real backpressure between presents.
+	// Testing whether an unconditional floor between presents, independent
+	// of that other pacing, avoids triggering it.
+	{
+		struct timespec t0, t1;
+		static int n = 0;
+		static double sum = 0;
+		static struct timespec last_present = {0, 0};
+		double ms, since_last_ms;
+
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		since_last_ms = (last_present.tv_sec == 0) ? -1 :
+			(t0.tv_sec - last_present.tv_sec) * 1000.0 + (t0.tv_nsec - last_present.tv_nsec) / 1e6;
+		if (since_last_ms >= 0 && since_last_ms < 50) {
+			rest((int)(50 - since_last_ms));
+		}
+
+		acquire_screen();
+		stretch_blit(bmp, screen, 0, 0, bmp->w, bmp->h, dst_x, dst_y, dst_w, dst_h);
+		release_screen();
+		clock_gettime(CLOCK_MONOTONIC, &last_present);
+		t1 = last_present;
+
+		ms = (t1.tv_sec - t0.tv_sec) * 1000.0 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+		sum += ms;
+		n++;
+		if (n == 1 || n % 3 == 0) {
+			fprintf(stderr, "[alex3 debug] blit_to_screen: last=%.2fms avg=%.2fms (n=%d) src=%dx%d dst=%dx%d phys=%dx%d\n",
+				ms, sum / n, n, bmp->w, bmp->h, dst_w, dst_h, phys_w, phys_h);
+		}
+	}
 }
 
 
@@ -404,7 +587,7 @@ void handle_AI_input(Tvehicle *v) {
 
     v->throttle = MIN(v->throttle + ftofix(0.03), ftofix(2.0)); 
 
-    v->target_angle = fatan2(itofix(race.track->ai_path[v->next_ai_point * 2 + 1]) - v->pos.y, itofix(race.track->ai_path[v->next_ai_point * 2]) - v->pos.x);
+    v->target_angle = fixatan2(itofix(race.track->ai_path[v->next_ai_point * 2 + 1]) - v->pos.y, itofix(race.track->ai_path[v->next_ai_point * 2]) - v->pos.x);
 
     if (((v->angle - v->target_angle) & 0xFFFFFF) > itofix(16)) {
         if (((v->angle - v->target_angle) & 0xFFFFFF) < itofix(128)) {
@@ -420,7 +603,7 @@ void handle_AI_input(Tvehicle *v) {
         v->steer_angle *= 0.2;
     }
 
-    if (fhypot(v->pos.y - itofix(race.track->ai_path[v->next_ai_point * 2 + 1]), v->pos.x - itofix(race.track->ai_path[v->next_ai_point * 2])) < itofix(128)) {
+    if (fixhypot(v->pos.y - itofix(race.track->ai_path[v->next_ai_point * 2 + 1]), v->pos.x - itofix(race.track->ai_path[v->next_ai_point * 2])) < itofix(128)) {
         v->next_ai_point ++;
         if (v->next_ai_point == race.track->num_ai_coords) v->next_ai_point = 0;
     }
@@ -501,7 +684,7 @@ void new_race(int plys) {
     }
     set_control(&ply[0].ctrl, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_RCONTROL);
     set_control(&ply[1].ctrl, KEY_W, KEY_S, KEY_A, KEY_D, KEY_LCONTROL);
-    ply[0].ctrl.use_joy = TRUE;
+    ply[0].ctrl.use_joy = FALSE;
     ply[1].ctrl.use_joy = FALSE;
 }
 
@@ -604,11 +787,26 @@ int play_race(int plys) {
         if (plys == 1 && ply[0].car->in_goal) playing = FALSE;
         if (plys == 2 && ply[0].car->in_goal && ply[1].car->in_goal) playing = FALSE;
 
+        // cap the render rate to the 20ms/50Hz logic tick (same idea as
+        // handle_menu()'s own "while(cycle_count == 0);" in menu.c) - the
+        // original Windows/DirectX build relied on a vsync-blocking blit to
+        // throttle this loop on its own; Linux's windowed blit doesn't
+        // block, so without this the loop free-runs and floods the
+        // compositor with draw calls far faster than the display can show
+        // them, which is what caused the on-device stutter (worse on faster
+        // hardware, since it floods harder). Uses rest(1) rather than a bare
+        // busy-wait so the CPU actually yields between checks - a tight spin
+        // here was starving DIGMID's audio mixing of timely CPU access and
+        // showed up as music stuttering during the race.
+        while(cycle_count == 0 && playing) rest(1);
 	}
 
+    cycle_count = 0;
     while(!key[KEY_ESC]) {
     	draw_frame(swap_screen, plys);
         blit_to_screen(swap_screen);
+        while(cycle_count == 0) rest(1);
+        cycle_count = 0;
     }
 
     destroy_map(race.track);
@@ -693,6 +891,12 @@ void show_credits() {
         textout_centre(swap_screen, data[FONT_MAIN].dat, "CODE AND GFX: Johan Peitz", 320, 300, -15);
         textout_centre(swap_screen, data[FONT_MAIN].dat, "MUSIC: Bob Bonnell", 320, 340, -15);
         blit_to_screen(swap_screen);
+
+        // see the matching comment in play_race() - caps this to the
+        // 20ms/50Hz logic tick instead of free-running, and yields via
+        // rest(1) rather than a bare busy-wait so it doesn't starve audio
+        // mixing.
+        while(cycle_count == 0) rest(1);
     }
 
     fade_out(4);
@@ -740,8 +944,8 @@ void main_menu_callback(void) {
     count ++;
     for(x=0;x<FLAG_W;x++)
         for(y=0;y<FLAG_H;y++) {
-            flag_y[x][y] = fixtoi(20 * (fcos(itofix(count*2 + y*3 + x)) + fsin(itofix(count + y*16 + x*25))));
-            flag_x[x][y] = fixtoi(20 * fcos(itofix(count + y*13 + x)));
+            flag_y[x][y] = fixtoi(20 * (fixcos(itofix(count*2 + y*3 + x)) + fixsin(itofix(count + y*16 + x*25))));
+            flag_x[x][y] = fixtoi(20 * fixcos(itofix(count + y*13 + x)));
         }
 
     for(x=0;x<FLAG_W-1;x++)
@@ -772,7 +976,7 @@ void main_menu_callback(void) {
     textout_centre(swap_screen, data[FONT_MAIN].dat, "ALEX THE ALLEGATOR 3:", 320, 10, -1);
 
     // draw sun
-    circlefill(swap_screen, 160 + fixtoi(100 * fcos(ftofix(count/4.0))), 480 + fixtoi(80 * fsin(ftofix(count/4.0))), 12, 244);
+    circlefill(swap_screen, 160 + fixtoi(100 * fixcos(ftofix(count/4.0))), 480 + fixtoi(80 * fixsin(ftofix(count/4.0))), 12, 244);
 
     // draw landscape
     draw_sprite(swap_screen, data[MENU_BG].dat, -((count>>2)%640), 428);
@@ -789,12 +993,12 @@ void main_menu_callback(void) {
 	textprintf_right(swap_screen, data[FONT_SML].dat, 637, 2, 15, "v%s%s", VERSION_STR, (debug ? " DEBUG ON" : ""));
 
 	if (window && options.full_screen) {
-		set_gfx_mode(GFX_AUTODETECT, 640, 480, 0, 0);
+		set_gfx_mode(GFX_AUTODETECT_WINDOWED, phys_w, phys_h, 0, 0);
 		window = 0;
 		set_palette(data[AAAPAL].dat);
 	}
 	if (!window && !options.full_screen) {
-		set_gfx_mode(GFX_DIRECTX_WIN, 640, 480, 0, 0);
+		set_gfx_mode(GFX_AUTODETECT_WINDOWED, phys_w, phys_h, 0, 0);
 		window = 1;
 		set_palette(data[AAAPAL].dat);
 	}

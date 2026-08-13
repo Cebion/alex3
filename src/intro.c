@@ -53,14 +53,16 @@ int esc_rest(int millis) {
 // used by the script interpretor to launch various events
 
 void cmd_reset() {
-    clear(screen);
+    clear(buffer);
+    blit_to_screen(buffer);
     set_palette(black_palette);
 }
 
 void cmd_showbmp(int id) {
     BITMAP *bmp = intro_data[PIC000 + id].dat;
 
-    draw_sprite(screen, bmp, 320 - bmp->w/2, 240 - bmp->h/2);
+    draw_sprite(buffer, bmp, 320 - bmp->w/2, 240 - bmp->h/2);
+    blit_to_screen(buffer);
 }
 
 void cmd_fadein(int speed, int id) {
@@ -90,9 +92,10 @@ void cmd_showtext(int ypos, Ttoken *t) {
     strcat(str, t->word);
 
     // clear space for text
-    rectfill(screen, 0, ypos, 639, ypos + 40, 0);
+    rectfill(buffer, 0, ypos, 639, ypos + 40, 0);
 
-    textout_centre(screen, data[FONT_MAIN].dat, str, 320, ypos, -1);
+    textout_centre(buffer, data[FONT_MAIN].dat, str, 320, ypos, -1);
+    blit_to_screen(buffer);
 
     fade_from_range(pal, intro_data[PAL000].dat, 8, 0, 16);
 }
@@ -126,13 +129,13 @@ void intro() {
     }
 
     done = FALSE;
-    
+
     cmd_reset();
 
     while(!done) {
         // get commands from file
-        fgets(buf, 512, fp);
-        token = tokenize(buf);	
+        if (fgets(buf, 512, fp) == NULL) break;
+        token = tokenize(buf);
 		if (token != NULL) {
 			if (!stricmp(token->word, "reset")) cmd_reset();
 			else if (!stricmp(token->word, "showbmp")) {

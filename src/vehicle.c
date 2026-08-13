@@ -28,26 +28,26 @@
 
 // returns true if the vehicles are touching each other
 int check_collision(Tvehicle *v1, Tvehicle *v2) {
-    int hyp = fixtoi(fhypot(v1->pos.x - v2->pos.x, v1->pos.y - v2->pos.y));
+    int hyp = fixtoi(fixhypot(v1->pos.x - v2->pos.x, v1->pos.y - v2->pos.y));
     fixed car_angle;
     fixed a1, a2, h1, h2;
 
     if (hyp > v1->radius + v2->radius) return FALSE;
 
     // get angle between cars
-    car_angle = fatan2(v1->pos.y - v2->pos.y, v1->pos.x - v2->pos.x);
+    car_angle = fixatan2(v1->pos.y - v2->pos.y, v1->pos.x - v2->pos.x);
 
     // get velocity vectors (polar)
-    h1 = fhypot(v1->vel.x, v1->vel.y);
-    a1 = fatan2(v1->vel.x, v1->vel.y);
-    h2 = fhypot(v2->vel.x, v2->vel.y);
-    a2 = fatan2(v2->vel.x, v2->vel.y);
+    h1 = fixhypot(v1->vel.x, v1->vel.y);
+    a1 = fixatan2(v1->vel.x, v1->vel.y);
+    h2 = fixhypot(v2->vel.x, v2->vel.y);
+    a2 = fixatan2(v2->vel.x, v2->vel.y);
 
     // apply forces
-    v2->vel.x -= 0.9 * fmul(h1, fcos(car_angle)) - 0.3 * fmul(h2, fcos(car_angle - itofix(128)));
-    v2->vel.y -= 0.9 * fmul(h1, fsin(car_angle)) - 0.3 * fmul(h2, fsin(car_angle - itofix(128)));
-    v1->vel.x -= 0.9 * fmul(h2, fcos(car_angle - itofix(128))) - 0.3 * fmul(h1, fcos(car_angle));
-    v1->vel.y -= 0.9 * fmul(h2, fsin(car_angle - itofix(128))) - 0.3 * fmul(h1, fsin(car_angle));
+    v2->vel.x -= 0.9 * fixmul(h1, fixcos(car_angle)) - 0.3 * fixmul(h2, fixcos(car_angle - itofix(128)));
+    v2->vel.y -= 0.9 * fixmul(h1, fixsin(car_angle)) - 0.3 * fixmul(h2, fixsin(car_angle - itofix(128)));
+    v1->vel.x -= 0.9 * fixmul(h2, fixcos(car_angle - itofix(128))) - 0.3 * fixmul(h1, fixcos(car_angle));
+    v1->vel.y -= 0.9 * fixmul(h2, fixsin(car_angle - itofix(128))) - 0.3 * fixmul(h1, fixsin(car_angle));
 
     return TRUE;
 }
@@ -73,7 +73,7 @@ void init_vehicle(Tvehicle *v, BITMAP *bmp) {
     // size
     v->w = bmp->w; 
     v->h = bmp->h;
-    v->radius = fixtoi(fhypot(itofix(v->w), itofix(v->h))) >> 1;
+    v->radius = fixtoi(fixhypot(itofix(v->w), itofix(v->h))) >> 1;
     v->radius -= 8;
     v->slip = 0;
 
@@ -110,8 +110,8 @@ void update_vehicle(Tvehicle *v) {
     }
 
 
-    v->vel.x += fmul(v->throttle - v->brake, fcos(v->angle));
-    v->vel.y += fmul(v->throttle - v->brake, fsin(v->angle));
+    v->vel.x += fixmul(v->throttle - v->brake, fixcos(v->angle));
+    v->vel.y += fixmul(v->throttle - v->brake, fixsin(v->angle));
 
     // update position
     v->pos.x += v->vel.x;
@@ -127,16 +127,16 @@ void draw_vehicle(BITMAP *bmp, Tvehicle *v, int ox, int oy) {
 
     // border
     /*
-	int hyp = fixtoi(fhypot(itofix(v->w), itofix(v->h)))>>1;
-	fixed ang = fatan2(itofix(v->w), itofix(v->h));
-	int cx1 = fixtoi(hyp*fcos(ang+v->angle));
-	int cy1 = fixtoi(hyp*fsin(ang+v->angle));
-	int cx2 = fixtoi(hyp*fcos(-ang+v->angle+itofix(128)));
-	int cy2 = fixtoi(hyp*fsin(-ang+v->angle+itofix(128)));
-	int cx3 = fixtoi(hyp*fcos(ang+v->angle+itofix(128)));
-	int cy3 = fixtoi(hyp*fsin(ang+v->angle+itofix(128)));
-	int cx4 = fixtoi(hyp*fcos(-ang+v->angle));
-	int cy4 = fixtoi(hyp*fsin(-ang+v->angle));
+	int hyp = fixtoi(fixhypot(itofix(v->w), itofix(v->h)))>>1;
+	fixed ang = fixatan2(itofix(v->w), itofix(v->h));
+	int cx1 = fixtoi(hyp*fixcos(ang+v->angle));
+	int cy1 = fixtoi(hyp*fixsin(ang+v->angle));
+	int cx2 = fixtoi(hyp*fixcos(-ang+v->angle+itofix(128)));
+	int cy2 = fixtoi(hyp*fixsin(-ang+v->angle+itofix(128)));
+	int cx3 = fixtoi(hyp*fixcos(ang+v->angle+itofix(128)));
+	int cy3 = fixtoi(hyp*fixsin(ang+v->angle+itofix(128)));
+	int cx4 = fixtoi(hyp*fixcos(-ang+v->angle));
+	int cy4 = fixtoi(hyp*fixsin(-ang+v->angle));
     */
 
     v->workbench = create_bitmap(v->image->w + (v->rear_tire->w << 1), v->image->h);
@@ -204,11 +204,11 @@ int check_vehicle_against_map(Tvehicle *v, Tmap *m) {
 
     // check for bumpers
     for(i=0;i<256;i+=32) {
-        y = fixtoi(v->pos.y + v->radius * fsin(itofix(i)));
+        y = fixtoi(v->pos.y + v->radius * fixsin(itofix(i)));
         ty = y >> 6;
         dy = y - (ty << 6);
         
-        x = fixtoi(v->pos.x + v->radius * fcos(itofix(i)));
+        x = fixtoi(v->pos.x + v->radius * fixcos(itofix(i)));
         tx = x >> 6;
         dx = x - (tx << 6);
         
