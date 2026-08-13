@@ -1,0 +1,14 @@
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Icon
+//
+
+// Icon with lowest ID value placed first to ensure application icon
+// remains consistent on all systems.
+IDI_APPLICATION         ICON    DISCARDABLE     "harold.ico"
+IDI_MAINAPPLICATION     ICON    DISCARDABLE     "harold.ico"
+IDI_MAINFRAME           ICON    DISCARDABLE     "harold.ico"
+IDR_APPLICATION         ICON    DISCARDABLE     "harold.ico"
+IDR_MAINAPPLICATION     ICON    DISCARDABLE     "harold.ico"
+IDR_MAINFRAME           ICON    DISCARDABLE     "harold.ico"

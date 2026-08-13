@@ -1,0 +1,30 @@
+/******************************************************
+ *     _____   .__                       ________     * 
+ *    /  _  \  |  |    ____  ___  ___    \_____  \    *
+ *   /  /_\  \ |  |  _/ __ \ \  \/  /      _(__  <    *
+ *  /    |    \|  |__\  ___/  >    <      /       \   *
+ *  \____|__  /|____/ \___  >/__/\_ \    /______  /   *
+ *          \/            \/       \/           \/    *
+ *													  *
+ ******************************************************
+ *   Alex 3, written for the Allegro Speedhack 2002   *
+ *   by Johan Peitz, http://www.freelunchdesign.com   *
+ ******************************************************
+ 
+    intro.h   										  
+
+    Simply to keep the intro stuff in a separate file.
+    
+ ******************************************************/
+
+
+
+#ifndef _INTRO_H_
+#define _INTRO_H_
+
+#include "allegro.h"
+
+
+void show_intro(BITMAP *bmp, DATAFILE *data);
+
+#endif
